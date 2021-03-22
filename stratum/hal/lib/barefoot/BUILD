@@ -22,7 +22,6 @@ package(
 # a that version upgrade re-visits these.
 SDE_DEFINES = select(
     {
-        "@local_barefoot_bin//:sde_version_9.1.0": ["SDE_9_1_0"],
         "@local_barefoot_bin//:sde_version_9.2.0": ["SDE_9_2_0"],
         "@local_barefoot_bin//:sde_version_9.3.0": ["SDE_9_3_0"],
         "@local_barefoot_bin//:sde_version_9.3.1": ["SDE_9_3_1"],
@@ -174,6 +173,7 @@ stratum_cc_library(
         "//stratum/glue/status",
         "//stratum/glue/status:statusor",
         "//stratum/hal/lib/common:common_cc_proto",
+        "//stratum/hal/lib/p4:utils",
         "//stratum/lib:constants",
         "//stratum/lib:utils",
         "//stratum/lib/channel",

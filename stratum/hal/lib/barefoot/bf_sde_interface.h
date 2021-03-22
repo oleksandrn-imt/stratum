@@ -229,6 +229,9 @@ class BfSdeInterface {
   // Return the chip type as a string.
   virtual std::string GetBfChipType(int device) const = 0;
 
+  // Return the SDE version string.
+  virtual std::string GetSdeVersion() const = 0;
+
   // Send a packet to the PCIe CPU port.
   virtual ::util::Status TxPacket(int device, const std::string& packet) = 0;
 
@@ -330,8 +333,11 @@ class BfSdeInterface {
   // TODO(max): figure out optional counter data API, see TotW#163
   virtual ::util::Status ReadIndirectCounter(
       int device, std::shared_ptr<BfSdeInterface::SessionInterface> session,
-      uint32 counter_id, int counter_index, absl::optional<uint64>* byte_count,
-      absl::optional<uint64>* packet_count, absl::Duration timeout) = 0;
+      uint32 counter_id, absl::optional<uint32> counter_index,
+      std::vector<uint32>* counter_indices,
+      std::vector<absl::optional<uint64>>* byte_counts,
+      std::vector<absl::optional<uint64>>* packet_counts,
+      absl::Duration timeout) = 0;
 
   // Updates a register at the given index in a table. The table ID must be a
   // BfRt table ID, not P4Runtime. Timeout specifies the maximum time to wait

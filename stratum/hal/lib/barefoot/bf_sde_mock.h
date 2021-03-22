@@ -99,6 +99,7 @@ class BfSdeMock : public BfSdeInterface {
                ::util::Status(int device, int port, int queue));
   MOCK_METHOD1(IsSoftwareModel, ::util::StatusOr<bool>(int device));
   MOCK_CONST_METHOD1(GetBfChipType, std::string(int device));
+  MOCK_CONST_METHOD0(GetSdeVersion, std::string());
   MOCK_METHOD2(TxPacket, ::util::Status(int device, const std::string& packet));
   MOCK_METHOD1(StartPacketIo, ::util::Status(int device));
   MOCK_METHOD1(StopPacketIo, ::util::Status(int device));
@@ -180,13 +181,14 @@ class BfSdeMock : public BfSdeInterface {
                      uint32 counter_id, int counter_index,
                      absl::optional<uint64> byte_count,
                      absl::optional<uint64> packet_count));
-  MOCK_METHOD7(
+  MOCK_METHOD8(
       ReadIndirectCounter,
       ::util::Status(int device,
                      std::shared_ptr<BfSdeInterface::SessionInterface> session,
-                     uint32 counter_id, int counter_index,
-                     absl::optional<uint64>* byte_count,
-                     absl::optional<uint64>* packet_count,
+                     uint32 counter_id, absl::optional<uint32> counter_index,
+                     std::vector<uint32>* counter_indices,
+                     std::vector<absl::optional<uint64>>* byte_counts,
+                     std::vector<absl::optional<uint64>>* packet_counts,
                      absl::Duration timeout));
   MOCK_METHOD5(
       WriteRegister,
