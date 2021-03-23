@@ -417,7 +417,8 @@ BFChassisManager::~BFChassisManager() = default;
             node_id_to_port_id_to_sdk_port_id[node_id][port_id];
         RETURN_IF_ERROR(bf_sde_interface_->SetDeflectOnDropDestination(
             unit, sdk_port_id, drop_target.queue()));
-        LOG(INFO) << "Configured deflect on drop target port " << sdk_port_id
+        LOG(INFO) << "Configured deflect on drop to target port " << port_id
+                  << " (SDK port " << sdk_port_id << ")"
                   << " in node " << node_id << ".";
       }
       CHECK_RETURN_IF_FALSE(gtl::InsertIfNotPresent(

@@ -1315,7 +1315,7 @@ std::string BfSdeWrapper::GetSdeVersion() const {
 
 ::util::Status BfSdeWrapper::SetDeflectOnDropDestination(int device, int port,
                                                          int queue) {
-  // DoD must be to a pipe-local port.
+  // The DoD destination must be a pipe-local port.
   p4_pd_tm_pipe_t pipe = DEV_PORT_TO_PIPE(port);
   RETURN_IF_BFRT_ERROR(
       p4_pd_tm_set_negative_mirror_dest(device, pipe, port, queue));
