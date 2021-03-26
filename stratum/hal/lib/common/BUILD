@@ -739,6 +739,7 @@ stratum_cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_github_openconfig_gnmi_proto//:gnmi_cc_proto",
+        "@com_googlesource_code_re2//:re2",
         "//stratum/lib:constants",
         "//stratum/lib:macros",
         "//stratum/public/lib:error",

@@ -2,14 +2,14 @@
 // Copyright 2018-present Open Networking Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-
 #include "stratum/hal/lib/common/utils.h"
 
 #include <cfenv>  // NOLINT
 #include <cmath>
 #include <sstream>  // IWYU pragma: keep
-#include <regex>  // NOLINT
 
+#include "absl/strings/str_replace.h"
+#include "re2/re2.h"
 #include "stratum/lib/constants.h"
 #include "stratum/lib/macros.h"
 #include "stratum/public/lib/error.h"
@@ -248,8 +248,7 @@ std::string ConvertAdminStateToString(const AdminState& state) {
   }
 }
 
-std::string ConvertSpeedBpsToString(
-    const ::google::protobuf::uint64& speed_bps) {
+std::string ConvertSpeedBpsToString(const uint64& speed_bps) {
   switch (speed_bps) {
     case kTenGigBps:
       return "SPEED_10GB";
@@ -268,8 +267,7 @@ std::string ConvertSpeedBpsToString(
   }
 }
 
-::google::protobuf::uint64 ConvertStringToSpeedBps(
-    const std::string& speed_string) {
+uint64 ConvertStringToSpeedBps(const std::string& speed_string) {
   if (speed_string.compare("SPEED_10GB") == 0) {
     return kTenGigBps;
   } else if (speed_string.compare("SPEED_20GB") == 0) {
@@ -318,34 +316,33 @@ bool ConvertTrunkMemberBlockStateToBool(const TrunkMemberBlockState& state) {
   return state == TRUNK_MEMBER_BLOCK_STATE_FORWARDING;
 }
 
-std::string MacAddressToYangString(
-    const ::google::protobuf::uint64& mac_address) {
+std::string MacAddressToYangString(const uint64& mac_address) {
   return absl::StrFormat("%x:%x:%x:%x:%x:%x", (mac_address >> 40) & 0xFF,
                          (mac_address >> 32) & 0xFF, (mac_address >> 24) & 0xFF,
                          (mac_address >> 16) & 0xFF, (mac_address >> 8) & 0xFF,
                          mac_address & 0xFF);
 }
 
-::google::protobuf::uint64 YangStringToMacAddress(
-    const std::string& yang_string) {
-  std::string tmp_str = yang_string;
-  // Remove colons
-  tmp_str.erase(std::remove(tmp_str.begin(), tmp_str.end(), ':'),
-                tmp_str.end());
-  return strtoull(tmp_str.c_str(), NULL, 16);
-}
+::util::StatusOr<uint64> YangStringToMacAddress(std::string yang_string) {
+  CHECK_RETURN_IF_FALSE(
+      RE2::FullMatch(yang_string, R"#(^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$)#"))
+      << "Provided string " << yang_string << " is not a valid MAC address.";
+  // Remove colons.
+  absl::StrReplaceAll({{":", ""}}, &yang_string);
+  uint64 mac_address;
+  // We rather use an absl internal function than strtoull.
+  CHECK_RETURN_IF_FALSE(absl::numbers_internal::safe_strtou64_base(
+      yang_string, &mac_address, 16));
 
-bool IsMacAddressValid(const std::string& mac_address) {
-  const std::regex mac_address_regex(kMacAddressRegex);
-  return regex_match(mac_address, mac_address_regex);
+  return mac_address;
 }
 
 bool IsPortAutonegEnabled(const TriState& state) {
-    return state == TriState::TRI_STATE_TRUE;
+  return state == TriState::TRI_STATE_TRUE;
 }
 
 bool IsAdminStateEnabled(const AdminState& admin_state) {
-    return admin_state == AdminState::ADMIN_STATE_ENABLED;
+  return admin_state == AdminState::ADMIN_STATE_ENABLED;
 }
 
 bool IsLoopbackStateEnabled(const LoopbackState& loopback_state) {
@@ -431,13 +428,9 @@ std::string ConvertHwStateToPresentString(const HwState& hw_state) {
   return status.ConsumeValueOrDie();
 }
 
-uint64 ConvertHzToMHz(const uint64& val) {
-  return val / 1000000;
-}
+uint64 ConvertHzToMHz(const uint64& val) { return val / 1000000; }
 
-uint64 ConvertMHzToHz(const uint64& val) {
-  return val * 1000000;
-}
+uint64 ConvertMHzToHz(const uint64& val) { return val * 1000000; }
 
 }  // namespace hal
 }  // namespace stratum
