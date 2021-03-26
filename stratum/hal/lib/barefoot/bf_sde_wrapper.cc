@@ -24,6 +24,7 @@
 #include "stratum/hal/lib/barefoot/macros.h"
 #include "stratum/hal/lib/barefoot/utils.h"
 #include "stratum/hal/lib/common/common.pb.h"
+#include "stratum/hal/lib/p4/utils.h"
 #include "stratum/lib/channel/channel.h"
 #include "stratum/lib/constants.h"
 #include "stratum/lib/utils.h"
@@ -52,10 +53,137 @@ constexpr int _PI_UPDATE_MAX_NAME_SIZE = 100;
 // Helper functions for dealing with the SDE API.
 namespace {
 // Convert kbit/s to bytes/s (* 1000 / 8).
-uint64 KbitsToBytesPerSecond(uint64 kbps) { return kbps * 125; }
+inline constexpr uint64 KbitsToBytesPerSecond(uint64 kbps) {
+  return kbps * 125;
+}
 
 // Convert bytes/s to kbit/s (/ 1000 * 8).
-uint64 BytesPerSecondToKbits(uint64 bytes) { return bytes / 125; }
+inline constexpr uint64 BytesPerSecondToKbits(uint64 bytes) {
+  return bytes / 125;
+}
+
+::util::Status DumpTableKey(const bfrt::BfRtTableKey* table_key) {
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_key->tableGet(&table));
+  std::vector<bf_rt_id_t> key_field_ids;
+  RETURN_IF_BFRT_ERROR(table->keyFieldIdListGet(&key_field_ids));
+
+  LOG(INFO) << "Table key {";
+  for (const auto& field_id : key_field_ids) {
+    std::string field_name;
+    bfrt::KeyFieldType key_type;
+    size_t field_size;
+    RETURN_IF_BFRT_ERROR(table->keyFieldNameGet(field_id, &field_name));
+    RETURN_IF_BFRT_ERROR(table->keyFieldTypeGet(field_id, &key_type));
+    RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(field_id, &field_size));
+
+    std::string value;
+    switch (key_type) {
+      case bfrt::KeyFieldType::EXACT: {
+        std::string v(NumBitsToNumBytes(field_size), '\x00');
+        RETURN_IF_BFRT_ERROR(table_key->getValue(
+            field_id, v.size(),
+            reinterpret_cast<uint8*>(gtl::string_as_array(&v))));
+        value = StringToHex(v);
+        break;
+      }
+      case bfrt::KeyFieldType::RANGE: {
+        std::string l(NumBitsToNumBytes(field_size), '\x00');
+        std::string h(NumBitsToNumBytes(field_size), '\x00');
+        RETURN_IF_BFRT_ERROR(table_key->getValueRange(
+            field_id, l.size(),
+            reinterpret_cast<uint8*>(gtl::string_as_array(&l)),
+            reinterpret_cast<uint8*>(gtl::string_as_array(&h))));
+        value = absl::StrCat(StringToHex(l), " - ", StringToHex(h));
+        break;
+      }
+      default:
+        RETURN_ERROR(ERR_INTERNAL)
+            << "Unknown key_type: " << static_cast<int>(key_type) << ".";
+    }
+
+    LOG(INFO) << "\t" << field_name << ": field_id: " << field_id
+              << " key_type: " << static_cast<int>(key_type)
+              << " field_size: " << field_size << " value: " << value;
+  }
+  LOG(INFO) << "}";
+
+  return ::util::OkStatus();
+}
+
+::util::Status DumpTableData(const bfrt::BfRtTableData* table_data) {
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_data->getParent(&table));
+
+  LOG(INFO) << "Table data {";
+  std::vector<bf_rt_id_t> data_field_ids;
+  if (table->actionIdApplicable()) {
+    bf_rt_id_t action_id;
+    RETURN_IF_BFRT_ERROR(table_data->actionIdGet(&action_id));
+    LOG(INFO) << "\taction_id: " << action_id;
+    RETURN_IF_BFRT_ERROR(table->dataFieldIdListGet(action_id, &data_field_ids));
+  } else {
+    RETURN_IF_BFRT_ERROR(table->dataFieldIdListGet(&data_field_ids));
+  }
+
+  for (const auto& field_id : data_field_ids) {
+    std::string field_name;
+    bfrt::DataType data_type;
+    size_t field_size;
+    bool is_active;
+    if (table->actionIdApplicable()) {
+      bf_rt_id_t action_id;
+      RETURN_IF_BFRT_ERROR(table_data->actionIdGet(&action_id));
+      RETURN_IF_BFRT_ERROR(
+          table->dataFieldNameGet(field_id, action_id, &field_name));
+      // FIXME
+      // RETURN_IF_BFRT_ERROR(table->dataFieldDataTypeGet(field_id,
+      // &data_type)); RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(field_id,
+      // &field_size)); RETURN_IF_BFRT_ERROR(table_data->isActive(field_id,
+      // &is_active));
+    } else {
+      RETURN_IF_BFRT_ERROR(table->dataFieldNameGet(field_id, &field_name));
+      RETURN_IF_BFRT_ERROR(table->dataFieldDataTypeGet(field_id, &data_type));
+      RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(field_id, &field_size));
+      RETURN_IF_BFRT_ERROR(table_data->isActive(field_id, &is_active));
+    }
+
+    std::string value;
+    switch (data_type) {
+      case bfrt::DataType::UINT64: {
+        uint64 v;
+        RETURN_IF_BFRT_ERROR(table_data->getValue(field_id, &v));
+        value = std::to_string(v);
+        break;
+      }
+      case bfrt::DataType::BYTE_STREAM: {
+        std::string v(NumBitsToNumBytes(field_size), '\x00');
+        RETURN_IF_BFRT_ERROR(table_data->getValue(
+            field_id, v.size(),
+            reinterpret_cast<uint8*>(gtl::string_as_array(&v))));
+        value = StringToHex(v);
+        break;
+      }
+      case bfrt::DataType::INT_ARR: {
+        std::vector<uint64_t> v;
+        RETURN_IF_BFRT_ERROR(table_data->getValue(field_id, &v));
+        value = PrintVector(v, ",");
+        break;
+      }
+      default:
+        RETURN_ERROR(ERR_INTERNAL)
+            << "Unknown data_type: " << static_cast<int>(data_type) << ".";
+    }
+
+    LOG(INFO) << "\t" << field_name << ": field_id: " << field_id
+              << " data_type: " << static_cast<int>(data_type)
+              << " field_size: " << field_size << " value: " << value
+              << " is_active: " << is_active;
+  }
+  LOG(INFO) << "}";
+
+  return ::util::OkStatus();
+}
 
 ::util::Status GetField(const bfrt::BfRtTableKey& table_key,
                         std::string field_name, uint64* field_value) {
@@ -368,93 +496,67 @@ template <typename T>
   return ::util::OkStatus();
 }
 
-::util::Status DumpTableData(const bfrt::BfRtTableData* table_data) {
-  const bfrt::BfRtTable* table;
-  RETURN_IF_BFRT_ERROR(table_data->getParent(&table));
-
-  std::vector<bf_rt_id_t> data_field_ids;
-  RETURN_IF_BFRT_ERROR(table->dataFieldIdListGet(&data_field_ids));
-  LOG(INFO) << "Table data {";
-  for (const auto& field_id : data_field_ids) {
-    std::string field_name;
-    RETURN_IF_BFRT_ERROR(table->dataFieldNameGet(field_id, &field_name));
-    bfrt::DataType data_type;
-    RETURN_IF_BFRT_ERROR(table->dataFieldDataTypeGet(field_id, &data_type));
-    size_t field_size;
-    RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(field_id, &field_size));
-    bool is_active;
-    RETURN_IF_BFRT_ERROR(table_data->isActive(field_id, &is_active));
-
-    std::string value;
-    switch (data_type) {
-      case bfrt::DataType::UINT64: {
-        uint64 v;
-        RETURN_IF_BFRT_ERROR(table_data->getValue(field_id, &v));
-        value = std::to_string(v);
-        break;
-      }
-      case bfrt::DataType::BYTE_STREAM: {
-        std::string v((field_size + 7) / 8, '\x00');
-        RETURN_IF_BFRT_ERROR(table_data->getValue(
-            field_id, v.size(),
-            reinterpret_cast<uint8*>(gtl::string_as_array(&v))));
-        value = StringToHex(v);
-        break;
-      }
-      case bfrt::DataType::INT_ARR: {
-        std::vector<uint64_t> v;
-        RETURN_IF_BFRT_ERROR(table_data->getValue(field_id, &v));
-        value = PrintVector(v, ",");
-        break;
-      }
-      default:
-        RETURN_ERROR(ERR_INTERNAL)
-            << "Unknown data_type: " << static_cast<int>(data_type) << ".";
-    }
-
-    LOG(INFO) << "\t" << field_name << ": field_id: " << field_id
-              << " data_type: " << static_cast<int>(data_type)
-              << " field_size: " << field_size << " value: " << value
-              << " is_active: " << is_active;
-  }
-  LOG(INFO) << "}";
-
-  return ::util::OkStatus();
-}
 }  // namespace
 
 ::util::Status TableKey::SetExact(int id, const std::string& value) {
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_key_->tableGet(&table));
+  size_t field_size_bits;
+  RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
+  std::string v = P4RuntimeByteStringToPaddedByteString(
+      value, NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_key_->setValue(
-      id, reinterpret_cast<const uint8*>(value.data()), value.size()));
+      id, reinterpret_cast<const uint8*>(v.data()), v.size()));
 
   return ::util::OkStatus();
 }
 
 ::util::Status TableKey::SetTernary(int id, const std::string& value,
                                     const std::string& mask) {
-  DCHECK_EQ(value.size(), mask.size());
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_key_->tableGet(&table));
+  size_t field_size_bits;
+  RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
+  std::string v = P4RuntimeByteStringToPaddedByteString(
+      value, NumBitsToNumBytes(field_size_bits));
+  std::string m = P4RuntimeByteStringToPaddedByteString(
+      mask, NumBitsToNumBytes(field_size_bits));
+  DCHECK_EQ(v.size(), m.size());
   RETURN_IF_BFRT_ERROR(table_key_->setValueandMask(
-      id, reinterpret_cast<const uint8*>(value.data()),
-      reinterpret_cast<const uint8*>(mask.data()), value.size()));
+      id, reinterpret_cast<const uint8*>(v.data()),
+      reinterpret_cast<const uint8*>(m.data()), v.size()));
 
   return ::util::OkStatus();
 }
 
 ::util::Status TableKey::SetLpm(int id, const std::string& prefix,
                                 uint16 prefix_length) {
-  RETURN_IF_BFRT_ERROR(
-      table_key_->setValueLpm(id, reinterpret_cast<const uint8*>(prefix.data()),
-                              prefix_length, prefix.size()));
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_key_->tableGet(&table));
+  size_t field_size_bits;
+  RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
+  std::string p = P4RuntimeByteStringToPaddedByteString(
+      prefix, NumBitsToNumBytes(field_size_bits));
+  RETURN_IF_BFRT_ERROR(table_key_->setValueLpm(
+      id, reinterpret_cast<const uint8*>(p.data()), prefix_length, p.size()));
 
   return ::util::OkStatus();
 }
 
 ::util::Status TableKey::SetRange(int id, const std::string& low,
                                   const std::string& high) {
-  DCHECK_EQ(low.size(), high.size());
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_key_->tableGet(&table));
+  size_t field_size_bits;
+  RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
+  std::string l = P4RuntimeByteStringToPaddedByteString(
+      low, NumBitsToNumBytes(field_size_bits));
+  std::string h = P4RuntimeByteStringToPaddedByteString(
+      high, NumBitsToNumBytes(field_size_bits));
+  DCHECK_EQ(l.size(), h.size());
   RETURN_IF_BFRT_ERROR(table_key_->setValueRange(
-      id, reinterpret_cast<const uint8*>(low.data()),
-      reinterpret_cast<const uint8*>(high.data()), low.size()));
+      id, reinterpret_cast<const uint8*>(l.data()),
+      reinterpret_cast<const uint8*>(h.data()), l.size()));
 
   return ::util::OkStatus();
 }
@@ -476,7 +578,7 @@ template <typename T>
   size_t field_size_bits;
   RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
   value->clear();
-  value->resize((field_size_bits + 7) / 8);
+  value->resize(NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_key_->getValue(
       id, value->size(),
       reinterpret_cast<uint8*>(gtl::string_as_array(value))));
@@ -491,9 +593,9 @@ template <typename T>
   size_t field_size_bits;
   RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
   value->clear();
-  value->resize((field_size_bits + 7) / 8);
+  value->resize(NumBitsToNumBytes(field_size_bits));
   mask->clear();
-  mask->resize((field_size_bits + 7) / 8);
+  mask->resize(NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_key_->getValueandMask(
       id, value->size(), reinterpret_cast<uint8*>(gtl::string_as_array(value)),
       reinterpret_cast<uint8*>(gtl::string_as_array(mask))));
@@ -508,7 +610,7 @@ template <typename T>
   size_t field_size_bits;
   RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
   prefix->clear();
-  prefix->resize((field_size_bits + 7) / 8);
+  prefix->resize(NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_key_->getValueLpm(
       id, prefix->size(),
       reinterpret_cast<uint8*>(gtl::string_as_array(prefix)), prefix_length));
@@ -523,9 +625,9 @@ template <typename T>
   size_t field_size_bits;
   RETURN_IF_BFRT_ERROR(table->keyFieldSizeGet(id, &field_size_bits));
   low->clear();
-  low->resize((field_size_bits + 7) / 8);
+  low->resize(NumBitsToNumBytes(field_size_bits));
   high->clear();
-  high->resize((field_size_bits + 7) / 8);
+  high->resize(NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_key_->getValueRange(
       id, low->size(), reinterpret_cast<uint8*>(gtl::string_as_array(low)),
       reinterpret_cast<uint8*>(gtl::string_as_array(high))));
@@ -555,8 +657,23 @@ TableKey::CreateTableKey(const bfrt::BfRtInfo* bfrt_info_, int table_id) {
 }
 
 ::util::Status TableData::SetParam(int id, const std::string& value) {
+  const bfrt::BfRtTable* table;
+  RETURN_IF_BFRT_ERROR(table_data_->getParent(&table));
+  bf_rt_id_t action_id = 0;
+  if (table->actionIdApplicable()) {
+    RETURN_IF_BFRT_ERROR(table_data_->actionIdGet(&action_id));
+  }
+  size_t field_size_bits;
+  if (action_id) {
+    RETURN_IF_BFRT_ERROR(
+        table->dataFieldSizeGet(id, action_id, &field_size_bits));
+  } else {
+    RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(id, &field_size_bits));
+  }
+  std::string p = P4RuntimeByteStringToPaddedByteString(
+      value, NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_data_->setValue(
-      id, reinterpret_cast<const uint8*>(value.data()), value.size()));
+      id, reinterpret_cast<const uint8*>(p.data()), p.size()));
 
   return ::util::OkStatus();
 }
@@ -568,14 +685,15 @@ TableKey::CreateTableKey(const bfrt::BfRtInfo* bfrt_info_, int table_id) {
   if (table->actionIdApplicable()) {
     RETURN_IF_BFRT_ERROR(table_data_->actionIdGet(&action_id));
   }
-  size_t field_size;
+  size_t field_size_bits;
   if (action_id) {
-    RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(id, action_id, &field_size));
+    RETURN_IF_BFRT_ERROR(
+        table->dataFieldSizeGet(id, action_id, &field_size_bits));
   } else {
-    RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(id, &field_size));
+    RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(id, &field_size_bits));
   }
   value->clear();
-  value->resize((field_size + 7) / 8);
+  value->resize(NumBitsToNumBytes(field_size_bits));
   RETURN_IF_BFRT_ERROR(table_data_->getValue(
       id, value->size(),
       reinterpret_cast<uint8*>(gtl::string_as_array(value))));
@@ -2172,12 +2290,12 @@ namespace {
   // parent table and pipeline. We cannot use just "f1" as the field name.
   bf_rt_id_t field_id;
   ASSIGN_OR_RETURN(field_id, GetRegisterDataFieldId(table));
-  size_t data_field_size;
-  RETURN_IF_BFRT_ERROR(table->dataFieldSizeGet(field_id, &data_field_size));
-  // The SDE expects any array with the full width.
-  std::string value((data_field_size + 7) / 8, '\x00');
-  value.replace(value.size() - register_data.size(), register_data.size(),
-                register_data);
+  size_t data_field_size_bits;
+  RETURN_IF_BFRT_ERROR(
+      table->dataFieldSizeGet(field_id, &data_field_size_bits));
+  // The SDE expects a string with the full width.
+  std::string value = P4RuntimeByteStringToPaddedByteString(
+      register_data, data_field_size_bits);
   RETURN_IF_BFRT_ERROR(table_data->setValue(
       field_id, reinterpret_cast<const uint8*>(value.data()), value.size()));
 
