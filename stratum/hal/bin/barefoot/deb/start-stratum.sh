@@ -2,6 +2,21 @@
 # Copyright 2020-present Open Networking Foundation
 # SPDX-License-Identifier: Apache-2.0
 
+#XXX Add something like hook so we can move this platform-dependent code away
+BSP_CONFIG=/boardutil/board_lane_map.json
+ATTEMPTS=120
+[ ! -f $BSP_CONFIG ] && \
+echo "Waiting for Boardutil to generate bsp config..."
+until [ -f $BSP_CONFIG ]; do
+	ATTEMPTS=$(($ATTEMPTS-1))
+	sleep 2
+	[ $ATTEMPTS -le 0 ] && \
+	echo "Config generation failed ..." && \
+	exit
+done
+echo "Bsp config detected - proceed service startup"
+
+
 FLAG_FILE=${FLAG_FILE:-/etc/stratum/stratum.flags}
 
 # Find kernel module if KDRV_PATH is not set
@@ -60,7 +75,7 @@ fi
 # Set up port map for device
 PORT_MAP="/etc/stratum/$PLATFORM/port_map.json"
 if [ ! -f "$PORT_MAP" ]; then
-    if [[ "$PLATFORM" != 'barefoot-tofino-model' ]]; then 
+    if [[ "$PLATFORM" != 'barefoot-tofino-model' ]] && [[ "$PLATFORM" != 'tahoe-imt-2624b' ]]; then
         echo "Cannot find port map file $PORT_MAP for $PLATFORM"
         exit 255
     fi
@@ -89,5 +104,7 @@ mkdir -p /var/run/stratum /var/log/stratum
 exec /usr/bin/stratum_bf \
     -chassis_config_file=/etc/stratum/$PLATFORM/chassis_config.pb.txt \
     -log_dir=/var/log/stratum \
+    -enable_onlp=false \
+    -bf_sim \
     -flagfile=$FLAG_FILE \
     $@
