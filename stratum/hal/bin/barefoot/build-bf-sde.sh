@@ -32,6 +32,15 @@ Examples:
 KERNEL_HEADERS_TARS=""
 while (( "$#" )); do
   case "$1" in
+    -d|--bf-sde-dir)
+      if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
+        SDE_DIR=$2
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
+      ;;
     -t|--bf-sde-tar)
       if [ -n "$2" ] && [ ${2:0:1} != "-" ]; then
         SDE_TAR=$2
@@ -89,8 +98,8 @@ while (( "$#" )); do
   esac
 done
 
-if [ -z "$SDE_TAR" ]; then
-  echo "--bf-sde-tar is required"
+if [[ -z "$SDE_TAR" ]] && [[ -z "$SDE_DIR" ]]; then
+  echo "--bf-sde-tar or --bf-sde-dir are required"
   print_help
   exit 1
 fi
@@ -98,6 +107,7 @@ fi
 echo "
 Build variables:
   BF SDE tar: $SDE_TAR
+  BF SDE dir: $SDE_DIR
   Kernel headers directories: ${KERNEL_HEADERS_TARS:-none}
   Build kernel module for local kernel: ${BUILD_LOCAL_KERNEL:-false}
   Stratum scripts directory: $STRATUM_BF_DIR
@@ -118,22 +128,31 @@ fi
 # the jsonschema library. And the new version of pyresistent(0.17.x) requires
 # Python >= 3.5
 # TODO: Remove this once we move to Python3
-$sudo pip install pyrsistent==0.14.0
+#$sudo pip install pyrsistent==0.14.0
 
-# Set up SDE build directory in /tmp
-tmpdir="$(mktemp -d /tmp/bf_sde.XXXXXX)"
-export SDE=$tmpdir
-export SDE_INSTALL=$SDE/install
+# Prioritize sde_dir
+if [ -n "$SDE_DIR" ]; then
+	# SDE already extracted
+	export SDE=$SDE_DIR
+	export SDE_INSTALL=$SDE/install
+elif [ -n "$SDE_TAR" ]; then
+	# Set up SDE build directory in /tmp
+	tmpdir="$(mktemp -d /tmp/bf_sde.XXXXXX)"
+	export SDE=$tmpdir
+	export SDE_INSTALL=$SDE/install
 
-# Extract the SDE
-tar xf $SDE_TAR -C $SDE --strip-components 1
+	# Extract the SDE
+	tar xf $SDE_TAR -C $SDE --strip-components 1
+fi
 
 # Patch stratum_profile.yaml in SDE
 cp -f $STRATUM_BF_DIR/stratum_profile.yaml $SDE/p4studio_build/profiles/
 
 # Build BF SDE
 pushd $SDE/p4studio_build
-./p4studio_build.py -up stratum_profile -wk -j$JOBS -shc
+# TODO: add ability to push custom flags
+#./p4studio_build.py -up stratum_profile -wk -j$JOBS -shc
+./p4studio_build.py -up stratum_profile -imt -fa -wk -j$JOBS
 popd
 echo "BF SDE build complete."
 
@@ -154,9 +173,17 @@ fi
 $STRATUM_BF_DIR/patch-bf-sde-install.sh
 
 # Build the Stratum BF SDE install archive
-SDE_INSTALL_TAR=${SDE_INSTALL_TAR:-"${SDE_TAR%.tgz}-install.tgz"}
+if [ -n "$SDE_DIR" ]; then
+	SDE_INSTALL_TAR=${SDE_INSTALL_TAR:-"${SDE_DIR%.tgz}-install.tgz"}
+elif [ -n "$SDE_TAR" ]; then
+	SDE_INSTALL_TAR=${SDE_INSTALL_TAR:-"${SDE_TAR%.tgz}-install.tgz"}
+fi
+
 tar czf $SDE_INSTALL_TAR -C $SDE_INSTALL .
-rm -rf $tmpdir
+
+if [ -n "$SDE_TAR" ]; then
+	rm -rf $tmpdir
+fi
 
 set +x
 echo "
